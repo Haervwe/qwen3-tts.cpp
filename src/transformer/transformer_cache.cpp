@@ -30,6 +30,14 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
     impl_->state.cache.n_layers = cfg.n_layers;
     reset_scheduler_reserve_state(impl_->state);
 
+    // Invalidate cached step graph (depends on n_ctx for mask dimensions)
+    if (impl_->state.cached_step_ctx) {
+        ggml_free(impl_->state.cached_step_ctx);
+        impl_->state.cached_step_ctx = nullptr;
+        impl_->state.cached_step_graph = nullptr;
+    }
+    impl_->state.step_mask.clear();
+
     const size_t n_tensors = cfg.n_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
 
@@ -71,6 +79,8 @@ bool TTSTransformer::init_kv_cache(int32_t n_ctx) {
 
 void TTSTransformer::clear_kv_cache() {
     impl_->state.cache.n_used = 0;
+    // Reset step mask so it gets re-initialized on next synthesis
+    impl_->state.step_mask.clear();
 }
 
 bool TTSTransformer::init_code_pred_kv_cache(int32_t n_ctx) {

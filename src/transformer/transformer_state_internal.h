@@ -127,6 +127,14 @@ struct tts_transformer_state {
 
     tts_kv_cache cache;
     tts_kv_cache code_pred_cache;
+
+    // Cached step graph — built once, reused every frame.
+    // The graph topology is identical every frame (only input data changes).
+    struct ggml_context * cached_step_ctx = nullptr;
+    struct ggml_cgraph * cached_step_graph = nullptr;
+
+    // Pre-allocated attention mask for forward_step (updated incrementally)
+    std::vector<ggml_fp16_t> step_mask;
 };
 
 struct tts_transformer_private {

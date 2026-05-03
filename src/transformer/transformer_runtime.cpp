@@ -192,8 +192,8 @@ bool TTSTransformer::forward_text(const int32_t * text_tokens, int32_t n_tokens,
 }
 
 bool TTSTransformer::forward_step(const float * step_embd, int32_t n_past,
-                                  std::vector<float> & output,
-                                  std::vector<float> * hidden_out) {
+                                   std::vector<float> & output,
+                                   std::vector<float> * hidden_out) {
     if (!impl_->model.ctx) {
         error_msg_ = "Model not loaded";
         return false;
@@ -223,6 +223,9 @@ bool TTSTransformer::forward_step(const float * step_embd, int32_t n_past,
 #ifdef QWEN3_TTS_TIMING
     t0 = clk::now();
 #endif
+    // NOTE: Graph caching (build once, reuse) was attempted but the HIP backend's
+    // CUDA graph capture caches by ggml_cgraph pointer and crashes after sched_reset()
+    // because buffer addresses change. Must build fresh graph each frame.
     struct ggml_cgraph * gf = transformer_internal::ops::build_step_graph(*this, n_past);
 #ifdef QWEN3_TTS_TIMING
     t1 = clk::now();
@@ -264,11 +267,20 @@ bool TTSTransformer::forward_step(const float * step_embd, int32_t n_past,
 
     struct ggml_tensor * inp_mask = ggml_graph_get_tensor(gf, "inp_mask");
     if (inp_mask) {
-        std::vector<ggml_fp16_t> mask(impl_->state.cache.n_ctx);
-        const ggml_fp16_t zero_fp16 = ggml_fp32_to_fp16(0.0f);
-        const ggml_fp16_t neg_inf_fp16 = ggml_fp32_to_fp16(-INFINITY);
-        for (int i = 0; i < impl_->state.cache.n_ctx; ++i) {
-            mask[(size_t) i] = (i <= n_past) ? zero_fp16 : neg_inf_fp16;
+        // Incremental mask update: allocate once, then unmask one position per frame.
+        // On first call (after clear_kv_cache), unmask ALL positions 0..n_past
+        // since n_past = prefill_len and those positions are already populated.
+        auto & mask = impl_->state.step_mask;
+        if ((int32_t) mask.size() != impl_->state.cache.n_ctx) {
+            // First call or context size changed — initialize and unmask 0..n_past
+            mask.assign(impl_->state.cache.n_ctx, ggml_fp32_to_fp16(-INFINITY));
+            const ggml_fp16_t zero_fp16 = ggml_fp32_to_fp16(0.0f);
+            for (int i = 0; i <= n_past; ++i) {
+                mask[i] = zero_fp16;
+            }
+        } else {
+            // Subsequent calls — just unmask the new position
+            mask[n_past] = ggml_fp32_to_fp16(0.0f);
         }
         ggml_backend_tensor_set(inp_mask, mask.data(), 0, impl_->state.cache.n_ctx * sizeof(ggml_fp16_t));
     }

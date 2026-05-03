@@ -148,6 +148,12 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
     std::vector<float> step_embd(cfg.hidden_size, 0.0f);
     std::vector<float> embd_row(cfg.hidden_size);
 
+    // Pre-allocate sampling scratch buffers outside the frame loop
+    // to avoid per-frame heap allocations.
+    std::vector<std::pair<float, int32_t>> scored_buf(cfg.codec_vocab_size);
+    std::vector<int32_t> codes_1_15;
+    codes_1_15.reserve(15);
+
     for (int frame = 0; frame < max_len; ++frame) {
         const bool trace_frame = transformer_internal::debug_trace_should_dump_frame(trace_cfg, frame);
         if (trace_frame) {
@@ -193,7 +199,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
             }
 
             if (top_k > 0 && top_k < cfg.codec_vocab_size) {
-                std::vector<std::pair<float, int32_t>> scored(cfg.codec_vocab_size);
+                auto & scored = scored_buf;
                 for (int32_t i = 0; i < cfg.codec_vocab_size; ++i) {
                     scored[i] = {logits[i], i};
                 }
@@ -255,7 +261,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
 #ifdef QWEN3_TTS_TIMING
         t0 = clk::now();
 #endif
-        std::vector<int32_t> codes_1_15;
+        codes_1_15.clear();
         if (!predict_codes_autoregressive(last_hidden_.data(), frame_codes[0], codes_1_15,
                                           temperature, top_k, frame)) {
             return false;
@@ -296,11 +302,9 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
 #ifdef QWEN3_TTS_TIMING
         t0 = clk::now();
 #endif
-        if (!transformer_internal::ops::lookup_single_embedding_row(*this, impl_->model.codec_embd, frame_codes[0], embd_row.data())) {
+        // Write CB0 embedding directly into step_embd (skip intermediate copy)
+        if (!transformer_internal::ops::lookup_single_embedding_row(*this, impl_->model.codec_embd, frame_codes[0], step_embd.data())) {
             return false;
-        }
-        for (int32_t h = 0; h < cfg.hidden_size; ++h) {
-            step_embd[h] = embd_row[h];
         }
 
         for (int cb = 1; cb < cfg.n_codebooks; ++cb) {

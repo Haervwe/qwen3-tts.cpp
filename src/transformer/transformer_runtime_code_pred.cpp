@@ -127,6 +127,7 @@ bool transformer_internal::ops::predict_codes_autoregressive_coreml(TTSTransform
         }
 
         if (top_k > 0 && top_k < vocab_size) {
+            // Reuse code_probs vector capacity for scored pairs (avoid alloc)
             std::vector<std::pair<float, int32_t>> scored(vocab_size);
             for (int32_t i = 0; i < vocab_size; ++i) {
                 scored[i] = {logits_ptr[i], i};
@@ -275,6 +276,10 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
     std::vector<float> logits_data(cfg.code_pred_vocab_size);
     std::vector<float> code_probs(cfg.code_pred_vocab_size);
 
+    // Pre-allocate scored buffer outside the lambda to avoid
+    // per-step heap allocation (called 14 times per frame).
+    std::vector<std::pair<float, int32_t>> code_pred_scored(cfg.code_pred_vocab_size);
+
     auto sample_or_argmax = [&](float * logits_ptr, int32_t vocab_size) -> int32_t {
         if (temperature <= 0.0f) {
             return argmax_code_pred(logits_ptr, vocab_size);
@@ -283,7 +288,7 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
             logits_ptr[i] /= temperature;
         }
         if (top_k > 0 && top_k < vocab_size) {
-            std::vector<std::pair<float, int32_t>> scored(vocab_size);
+            auto & scored = code_pred_scored;
             for (int32_t i = 0; i < vocab_size; ++i) {
                 scored[i] = {logits_ptr[i], i};
             }

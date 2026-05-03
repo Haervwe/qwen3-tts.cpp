@@ -3,7 +3,12 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <poll.h>
+#endif
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -307,9 +312,16 @@ int main(int argc, char ** argv) {
         printf("READY\n");
         fflush(stdout);
 
+        // Async WAV save: overlap disk I/O with GPU synthesis of the next chunk.
+        // After synthesis, the save runs in a background thread while the main
+        // thread reads the next command. If no more commands are queued (last chunk),
+        // we join immediately to avoid deadlocking on fgets().
+        std::thread save_thread;
+        std::string pending_done_msg;
+
         char line[8192];
         while (fgets(line, sizeof(line), stdin)) {
-            // Format: TEXT|OUTPUT|SPEAKER|REF|INSTRUCT
+            // Format: TEXT|OUTPUT|SPEAKER|REF|INSTRUCT|EMBEDDING
             std::string l(line);
             if (l.empty() || l == "\n") continue;
             if (l.back() == '\n') l.pop_back();
@@ -325,6 +337,13 @@ int main(int argc, char ** argv) {
             if (parts.size() < 2) {
                 fprintf(stderr, "Daemon error: invalid input format. Expected: TEXT|OUTPUT|...\n");
                 continue;
+            }
+
+            // Wait for PREVIOUS save to complete and send its DONE/ERROR
+            if (save_thread.joinable()) {
+                save_thread.join();
+                printf("%s\n", pending_done_msg.c_str());
+                fflush(stdout);
             }
 
             std::string d_text = parts[0];
@@ -363,14 +382,36 @@ int main(int argc, char ** argv) {
             }
 
             if (d_res.success) {
-                if (qwen3_tts::save_audio_file(d_out, d_res.audio, d_res.sample_rate)) {
-                    printf("DONE|%s\n", d_out.c_str());
-                } else {
-                    printf("ERROR|Failed to save WAV\n");
+                // Move audio data to background thread for async WAV save.
+                auto audio_data = std::move(d_res.audio);
+                auto sample_rate = d_res.sample_rate;
+                auto output_path = d_out;
+
+                save_thread = std::thread([audio_data = std::move(audio_data), sample_rate, output_path]() {
+                    qwen3_tts::save_audio_file(output_path, audio_data, sample_rate);
+                });
+                pending_done_msg = "DONE|" + d_out;
+
+                // Check if more commands are queued in stdin.
+                // If not (last chunk), join immediately to avoid deadlock on fgets().
+                // If yes, defer DONE to overlap save I/O with next synthesis.
+                struct pollfd pfd = { fileno(stdin), POLLIN, 0 };
+                if (poll(&pfd, 1, 0) <= 0) {
+                    // No more input queued — this is the last chunk, send DONE now
+                    save_thread.join();
+                    printf("%s\n", pending_done_msg.c_str());
+                    fflush(stdout);
                 }
             } else {
                 printf("ERROR|%s\n", d_res.error_msg.c_str());
+                fflush(stdout);
             }
+        }
+
+        // Flush last pending save before exit (in case stdin closed mid-batch)
+        if (save_thread.joinable()) {
+            save_thread.join();
+            printf("%s\n", pending_done_msg.c_str());
             fflush(stdout);
         }
         return 0;

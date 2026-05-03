@@ -42,7 +42,7 @@ struct ops {
                                     int32_t n_instruct_tokens = 0);
 
     static struct ggml_cgraph * build_prefill_forward_graph(TTSTransformer & self, int32_t n_tokens, int32_t n_past);
-    static struct ggml_cgraph * build_step_graph(TTSTransformer & self, int32_t n_past);
+    static struct ggml_cgraph * build_step_graph(TTSTransformer & self, int32_t n_past, bool keep_ctx = false);
     static bool project_text_tokens(TTSTransformer & self,
                                     const int32_t * text_tokens,
                                     int32_t n_tokens,

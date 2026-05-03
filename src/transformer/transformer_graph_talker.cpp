@@ -169,7 +169,7 @@ struct ggml_cgraph * transformer_internal::ops::build_prefill_forward_graph(TTST
     return gf;
 }
 
-struct ggml_cgraph * transformer_internal::ops::build_step_graph(TTSTransformer & self, int32_t n_past) {
+struct ggml_cgraph * transformer_internal::ops::build_step_graph(TTSTransformer & self, int32_t n_past, bool keep_ctx) {
     auto & impl = self.impl_;
     const auto & cfg = impl->model.config;
     const int n_head = cfg.n_attention_heads;
@@ -333,7 +333,13 @@ struct ggml_cgraph * transformer_internal::ops::build_step_graph(TTSTransformer 
 
     ggml_build_forward_expand(gf, logits);
 
-    ggml_free(ctx0);
+    if (keep_ctx) {
+        // Keep context alive — graph tensor metadata lives in this memory.
+        // Store it in state for later cleanup.
+        impl->state.cached_step_ctx = ctx0;
+    } else {
+        ggml_free(ctx0);
+    }
     return gf;
 }
 

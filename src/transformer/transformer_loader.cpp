@@ -13,6 +13,14 @@
 namespace qwen3_tts {
 
 void TTSTransformer::unload_model() {
+    // Free cached step graph before KV caches (graph references cache tensors)
+    if (impl_->state.cached_step_ctx) {
+        ggml_free(impl_->state.cached_step_ctx);
+        impl_->state.cached_step_ctx = nullptr;
+        impl_->state.cached_step_graph = nullptr;
+    }
+    impl_->state.step_mask.clear();
+
     free_tts_kv_cache(impl_->state.cache);
     free_tts_kv_cache(impl_->state.code_pred_cache);
     free_transformer_model(impl_->model);
